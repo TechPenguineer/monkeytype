@@ -2,46 +2,67 @@ import Config from "./config";
 import * as Caret from "./test/caret";
 import * as Notifications from "./elements/notifications";
 import * as CustomText from "./test/custom-text";
-import * as TestActive from "./states/test-active";
+import * as TestState from "./test/test-state";
 import * as ConfigEvent from "./observables/config-event";
 import { debounce, throttle } from "throttle-debounce";
 import * as TestUI from "./test/test-ui";
 import { get as getActivePage } from "./states/active-page";
+import { canQuickRestart, isDevEnvironment } from "./utils/misc";
+import { isCustomTextLong } from "./states/custom-text-name";
 
-export function updateKeytips(): void {
-  if (Config.swapEscAndTab) {
-    $(".pageSettings .tip").html(`
-    tip: You can also change all these settings quickly using the
-    command line (
-    <key>tab</key>
-    )`);
-    $("#bottom .keyTips").html(`
-    <key>esc</key> - restart test<br>
-      <key>tab</key> - command line`);
-  } else {
-    $(".pageSettings .tip").html(`
-    tip: You can also change all these settings quickly using the
-    command line (
-    <key>esc</key>
-    )`);
-    $("#bottom .keyTips").html(`
-    <key>tab</key> - restart test<br>
-      <key>esc</key> or <key>ctrl/cmd</key>+<key>shift</key>+<key>p</key> - command line`);
+let isPreviewingFont = false;
+export function previewFontFamily(font: string): void {
+  document.documentElement.style.setProperty(
+    "--font",
+    '"' + font.replace(/_/g, " ") + '", "Roboto Mono", "Vazirmatn"'
+  );
+  void TestUI.updateHintsPosition();
+  isPreviewingFont = true;
+}
+
+export function clearFontPreview(): void {
+  if (!isPreviewingFont) return;
+  previewFontFamily(Config.fontFamily);
+  isPreviewingFont = false;
+}
+
+export function setMediaQueryDebugLevel(level: number): void {
+  const body = document.querySelector("body") as HTMLElement;
+
+  body.classList.remove("mediaQueryDebugLevel1");
+  body.classList.remove("mediaQueryDebugLevel2");
+  body.classList.remove("mediaQueryDebugLevel3");
+
+  if (level > 0 && level < 4) {
+    body.classList.add(`mediaQueryDebugLevel${level}`);
   }
 }
 
-if (window.location.hostname === "localhost") {
+function updateKeytips(): void {
+  const userAgent = window.navigator.userAgent.toLowerCase();
+  const modifierKey =
+    userAgent.includes("mac") && !userAgent.includes("firefox")
+      ? "cmd"
+      : "ctrl";
+
+  const commandKey = Config.quickRestart === "esc" ? "tab" : "esc";
+  $("footer .keyTips").html(`
+    ${
+      Config.quickRestart == "off"
+        ? "<key>tab</key> + <key>enter</key>"
+        : `<key>${Config.quickRestart}</key>`
+    } - restart test<br>
+    <key>${commandKey}</key> or <key>${modifierKey}</key>+<key>shift</key>+<key>p</key> - command line`);
+}
+
+if (isDevEnvironment()) {
   window.onerror = function (error): void {
-    Notifications.add(error.toString(), -1);
+    Notifications.add(JSON.stringify(error), -1);
   };
-  $("#top .logo .top").text("localhost");
+  $("header #logo .top").text("localhost");
   $("head title").text($("head title").text() + " (localhost)");
   $("body").append(
     `<div class="devIndicator tl">local</div><div class="devIndicator br">local</div>`
-  );
-  $(".pageSettings .discordIntegration .buttons a").attr(
-    "href",
-    "https://discord.com/api/oauth2/authorize?client_id=798272335035498557&redirect_uri=http%3A%2F%2Flocalhost%3A5000%2Fverify&response_type=token&scope=identify"
   );
 }
 
@@ -55,22 +76,17 @@ window.addEventListener("keydown", function (e) {
 window.addEventListener("beforeunload", (event) => {
   // Cancel the event as stated by the standard.
   if (
-    (Config.mode === "words" && Config.words < 1000) ||
-    (Config.mode === "time" && Config.time < 3600) ||
-    Config.mode === "quote" ||
-    (Config.mode === "custom" &&
-      CustomText.isWordRandom &&
-      CustomText.word < 1000) ||
-    (Config.mode === "custom" &&
-      CustomText.isTimeRandom &&
-      CustomText.time < 1000) ||
-    (Config.mode === "custom" &&
-      !CustomText.isWordRandom &&
-      CustomText.text.length < 1000)
+    canQuickRestart(
+      Config.mode,
+      Config.words,
+      Config.time,
+      CustomText.getData(),
+      isCustomTextLong() ?? false
+    )
   ) {
     //ignore
   } else {
-    if (TestActive.get()) {
+    if (TestState.isActive) {
       event.preventDefault();
       // Chrome requires returnValue to be set.
       event.returnValue = "";
@@ -78,17 +94,26 @@ window.addEventListener("beforeunload", (event) => {
   }
 });
 
-const debouncedEvent = debounce(250, async () => {
-  Caret.updatePosition();
-  if (
-    Config.tapeMode !== "off" &&
-    getActivePage() === "test" &&
-    !TestUI.resultVisible
-  ) {
-    TestUI.scrollTape();
+const debouncedEvent = debounce(250, () => {
+  void Caret.updatePosition();
+  if (getActivePage() === "test" && !TestUI.resultVisible) {
+    if (Config.tapeMode !== "off") {
+      TestUI.scrollTape();
+    } else {
+      const word =
+        document.querySelectorAll<HTMLElement>("#words .word")[
+          TestUI.activeWordElementIndex - 1
+        ];
+      if (word) {
+        const currentTop: number = Math.floor(word.offsetTop);
+        TestUI.lineJump(currentTop);
+      }
+    }
   }
   setTimeout(() => {
-    Caret.show();
+    if ($("#wordsInput").is(":focus")) {
+      Caret.show();
+    }
   }, 250);
 });
 
@@ -102,5 +127,5 @@ $(window).on("resize", () => {
 });
 
 ConfigEvent.subscribe((eventKey) => {
-  if (eventKey === "swapEscAndTab") updateKeytips();
+  if (eventKey === "quickRestart") updateKeytips();
 });

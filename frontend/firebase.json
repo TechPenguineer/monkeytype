@@ -1,15 +1,11 @@
 {
   "hosting": {
-    "public": "public",
+    "public": "dist",
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
     "rewrites": [
       {
         "source": "/privacy-policy",
         "destination": "/privacy-policy.html"
-      },
-      {
-        "source": "/das",
-        "destination": "/das.html"
       },
       {
         "source": "/terms-of-service",
@@ -20,7 +16,15 @@
         "destination": "/security-policy.html"
       },
       {
-        "source": "**",
+        "source": "/adtest",
+        "destination": "/adtest.html"
+      },
+      {
+        "source": "/test",
+        "destination": "/index.html"
+      },
+      {
+        "source": "!/@(js|about|challenges|css|fonts|funbox|images|languages|layouts|quotes|sound|themes|webfonts)/**",
         "destination": "/index.html"
       }
     ],
@@ -35,6 +39,78 @@
             "value": "frame-ancestors 'none'"
           },
           { "key": "X-Frame-Options", "value": "DENY" }
+        ]
+      },
+      {
+        "source": "/**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
+          }
+        ]
+      },
+      {
+        "source": "**/*.@(jpg|jpeg|gif|png|svg)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "max-age=31536000"
+          }
+        ]
+      },
+      {
+        "source": "**/*.@(eot|otf|ttf|ttc|woff|woff2)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "max-age=31536000"
+          }
+        ]
+      },
+      {
+        "source": "**/*.@(json|wav|txt|css)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "max-age=3600"
+          }
+        ]
+      },
+      {
+        "source": "**/*.min.@(js|css)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "max-age=31536000"
+          }
+        ]
+      },
+      {
+        "source": "**/*.????????.@(js|css)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "max-age=31536000"
+          }
+        ]
+      },
+      {
+        "source": "/service-worker.js",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
+          }
+        ]
+      },
+      {
+        "source": "/version.json",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
+          }
         ]
       }
     ]

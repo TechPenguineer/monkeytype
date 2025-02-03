@@ -1,80 +1,128 @@
 import Ape from "../ape";
 import * as DB from "../db";
 import Config from "../config";
+import * as DateTime from "../utils/date-and-time";
 import * as Misc from "../utils/misc";
+import * as Arrays from "../utils/arrays";
+import * as Numbers from "@monkeytype/util/numbers";
 import * as Notifications from "./notifications";
-import format from "date-fns/format";
-import { Auth } from "../firebase";
+import { format } from "date-fns/format";
+import { isAuthenticated } from "../firebase";
+import { differenceInSeconds } from "date-fns/differenceInSeconds";
+import { getHTMLById as getBadgeHTMLbyId } from "../controllers/badge-controller";
+import * as ConnectionState from "../states/connection";
+import * as Skeleton from "../utils/skeleton";
+import { debounce } from "throttle-debounce";
+import Format from "../utils/format";
+import SlimSelect from "slim-select";
+import { getHtmlByUserFlags } from "../controllers/user-flag-controller";
+import {
+  LeaderboardEntry,
+  LeaderboardRank,
+} from "@monkeytype/contracts/schemas/leaderboards";
+import { Mode } from "@monkeytype/contracts/schemas/shared";
+import * as TestStats from "../test/test-stats";
 
-const currentLeaderboard = "time_15";
+const wrapperId = "leaderboardsWrapper";
 
-type LbKey = 15 | 60;
+let currentTimeRange: "allTime" | "daily" = "allTime";
+let currentLanguage = "english";
+let showingYesterday = false;
+
+type LbKey = "15" | "60";
 
 let currentData: {
-  [key in LbKey]: MonkeyTypes.LeaderboardEntry[];
+  [_key in LbKey]: LeaderboardEntry[];
 } = {
-  15: [],
-  60: [],
+  "15": [],
+  "60": [],
 };
 
 let currentRank: {
-  [key in LbKey]: MonkeyTypes.LeaderboardEntry | Record<string, never>;
+  [_key in LbKey]:
+    | (LeaderboardRank & { minWpm?: number }) //Daily LB rank has minWpm
+    | Record<string, never>;
 } = {
-  15: {},
-  60: {},
+  "15": {},
+  "60": {},
+};
+
+let currentAvatars: {
+  [_key in LbKey]: (string | null)[];
+} = {
+  "15": [],
+  "60": [],
 };
 
 const requesting = {
-  15: false,
-  60: false,
+  "15": false,
+  "60": false,
 };
 
 const leaderboardSingleLimit = 50;
 
 let updateTimer: number | undefined;
 
-function clearBody(lb: number): void {
-  if (lb === 15) {
+function clearBody(lb: LbKey): void {
+  if (lb === "15") {
     $("#leaderboardsWrapper table.left tbody").empty();
-  } else if (lb === 60) {
+  } else if (lb === "60") {
     $("#leaderboardsWrapper table.right tbody").empty();
   }
 }
 
-function clearFoot(lb: number): void {
-  if (lb === 15) {
+function clearFoot(lb: LbKey): void {
+  if (lb === "15") {
     $("#leaderboardsWrapper table.left tfoot").empty();
-  } else if (lb === 60) {
+  } else if (lb === "60") {
     $("#leaderboardsWrapper table.right tfoot").empty();
   }
 }
 
 function reset(): void {
   currentData = {
-    15: [],
-    60: [],
+    "15": [],
+    "60": [],
   };
 
   currentRank = {
-    15: {},
-    60: {},
+    "15": {},
+    "60": {},
+  };
+
+  currentAvatars = {
+    "15": [],
+    "60": [],
   };
 }
 
 function stopTimer(): void {
   clearInterval(updateTimer);
   updateTimer = undefined;
-  $("#leaderboards .subTitle").text("Next update in: --:--");
+  $("#leaderboards .subTitle").text("-");
 }
 
 function updateTimerElement(): void {
-  const date = new Date();
-  const minutesToNextUpdate = 14 - (date.getMinutes() % 15);
-  const secondsToNextUpdate = 60 - date.getSeconds();
-  const totalSeconds = minutesToNextUpdate * 60 + secondsToNextUpdate;
-  $("#leaderboards .subTitle").text(
-    "Next update in: " + Misc.secondsToString(totalSeconds, true)
-  );
+  if (currentTimeRange === "daily") {
+    const date = new Date();
+    date.setUTCHours(0, 0, 0, 0);
+    date.setDate(date.getDate() + 1);
+    const dateNow = new Date();
+    dateNow.setUTCMilliseconds(0);
+    const diff = differenceInSeconds(date, dateNow);
+
+    $("#leaderboards .subTitle").text(
+      "Next reset in: " + DateTime.secondsToString(diff, true)
+    );
+  } else {
+    const date = new Date();
+    const minutesToNextUpdate = 14 - (date.getMinutes() % 15);
+    const secondsToNextUpdate = 60 - date.getSeconds();
+    const totalSeconds = minutesToNextUpdate * 60 + secondsToNextUpdate;
+    $("#leaderboards .subTitle").text(
+      "Next update in: " + DateTime.secondsToString(totalSeconds, true)
+    );
+  }
 }
 
 function startTimer(): void {
@@ -84,89 +132,142 @@ function startTimer(): void {
   }, 1000) as unknown as number;
 }
 
-function showLoader(lb: number): void {
-  if (lb === 15) {
+function showLoader(lb: LbKey): void {
+  if (lb === "15") {
     $(`#leaderboardsWrapper .leftTableLoader`).removeClass("hidden");
-  } else if (lb === 60) {
+  } else if (lb === "60") {
     $(`#leaderboardsWrapper .rightTableLoader`).removeClass("hidden");
   }
 }
 
-function hideLoader(lb: number): void {
-  if (lb === 15) {
+function hideLoader(lb: LbKey): void {
+  if (lb === "15") {
     $(`#leaderboardsWrapper .leftTableLoader`).addClass("hidden");
-  } else if (lb === 60) {
+  } else if (lb === "60") {
     $(`#leaderboardsWrapper .rightTableLoader`).addClass("hidden");
   }
 }
 
 function updateFooter(lb: LbKey): void {
   let side;
-  if (lb === 15) {
+  if (lb === "15") {
     side = "left";
   } else {
     side = "right";
   }
-  $(`#leaderboardsWrapper table.${side} tfoot`).html(`
+
+  if (!isAuthenticated()) {
+    $(`#leaderboardsWrapper table.${side} tfoot`).html(`
     <tr>
-      <td><br><br></td>
-      <td colspan="4" style="text-align:center;">Not qualified</>
-      <td><br><br></td>
+      <td colspan="6" style="text-align:center;"></>
     </tr>
     `);
-
-  let toppercent;
-  if (currentRank[lb]) {
-    let num = Misc.roundTo2(
-      (currentRank[lb]["rank"] / (currentRank[lb].count as number)) * 100
-    );
-    if (num == 0) {
-      num = 0.01;
-    }
-
-    toppercent = `Top ${num}%`;
+    return;
   }
-  if (currentRank[lb]) {
-    const entry = currentRank[lb];
+
+  if (
+    !Misc.isDevEnvironment() &&
+    (DB.getSnapshot()?.typingStats?.timeTyping ?? 0) < 7200
+  ) {
+    $(`#leaderboardsWrapper table.${side} tfoot`).html(`
+    <tr>
+      <td colspan="6" style="text-align:center;">Your account must have 2 hours typed to be placed on the leaderboard.</>
+    </tr>
+    `);
+    return;
+  }
+
+  if (DB.getSnapshot()?.lbOptOut === true) {
+    $(`#leaderboardsWrapper table.${side} tfoot`).html(`
+    <tr>
+      <td colspan="6" style="text-align:center;">You have opted out of the leaderboards</>
+    </tr>
+    `);
+    return;
+  }
+
+  const lbRank = currentRank[lb];
+
+  if (
+    currentTimeRange === "daily" &&
+    lbRank !== null &&
+    lbRank.minWpm === undefined
+  ) {
+    //old response format
+    $(`#leaderboardsWrapper table.${side} tfoot`).html(`
+    <tr>
+      <td colspan="6" style="text-align:center;">Looks like the server returned data in a new format, please refresh</>
+    </tr>
+    `);
+    return;
+  }
+
+  let toppercent = "";
+  if (currentTimeRange === "allTime" && lbRank !== undefined && lbRank?.rank) {
+    const num = Numbers.roundTo2((lbRank.rank / currentRank[lb].count) * 100);
+    if (currentRank[lb].rank === 1) {
+      toppercent = "GOAT";
+    } else {
+      toppercent = `Top ${num}%`;
+    }
+    toppercent = `<br><span class="sub">${toppercent}</span>`;
+  }
+
+  const entry = lbRank?.entry;
+  if (entry) {
     const date = new Date(entry.timestamp);
     $(`#leaderboardsWrapper table.${side} tfoot`).html(`
     <tr>
-    <td>${entry.rank}</td>
-    <td><span class="top">You</span><br><span class="sub">${toppercent}</span></td>
-    <td class="alignRight">${(Config.alwaysShowCPM
-      ? entry.wpm * 5
-      : entry.wpm
-    ).toFixed(2)}<br><div class="sub">${entry.acc.toFixed(2)}%</div></td>
-    <td class="alignRight">${(Config.alwaysShowCPM
-      ? entry.raw * 5
-      : entry.raw
-    ).toFixed(2)}<br><div class="sub">${
-      !entry.consistency || entry.consistency === "-"
-        ? "-"
-        : entry.consistency.toFixed(2) + "%"
-    }</div></td>
-    <td class="alignRight">time<br><div class="sub">${lb}</div></td>
+    <td>${lbRank.rank}</td>
+    <td><span class="top">You</span>${toppercent ? toppercent : ""}</td>
+    <td class="alignRight">${Format.typingSpeed(entry.wpm, {
+      showDecimalPlaces: true,
+    })}<br>
+    <div class="sub">${Format.percentage(entry.acc, {
+      showDecimalPlaces: true,
+    })}</div></td>
+    <td class="alignRight">${Format.typingSpeed(entry.raw, {
+      showDecimalPlaces: true,
+    })}<br>
+    <div class="sub">${Format.percentage(entry.consistency, {
+      showDecimalPlaces: true,
+    })}</div></td>
     <td class="alignRight">${format(date, "dd MMM yyyy")}<br>
     <div class='sub'>${format(date, "HH:mm")}</div></td>
   </tr>
   `);
+  } else if (currentTimeRange === "daily") {
+    $(`#leaderboardsWrapper table.${side} tfoot`).html(`
+    <tr>
+      <td colspan="6" style="text-align:center;">Not qualified ${`(min speed required: ${currentRank[lb]?.minWpm} wpm)`}</>
+    </tr>
+    `);
+  } else {
+    $(`#leaderboardsWrapper table.${side} tfoot`).html(`
+    <tr>
+      <td colspan="6" style="text-align:center;">Not qualified</>
+    </tr>
+    `);
   }
 }
 
 function checkLbMemory(lb: LbKey): void {
+  if (currentTimeRange === "daily") return;
+
   let side;
-  if (lb === 15) {
+  if (lb === "15") {
     side = "left";
   } else {
     side = "right";
   }
 
-  const memory = DB.getSnapshot()?.lbMemory?.time?.[lb]?.["english"] ?? 0;
+  const memory = DB.getSnapshot()?.lbMemory?.["time"]?.[lb]?.["english"] ?? 0;
 
-  if (currentRank[lb]) {
-    const difference = memory - currentRank[lb].rank;
+  const rank = currentRank[lb]?.rank;
+  if (rank) {
+    const difference = memory - rank;
     if (difference > 0) {
-      DB.updateLbMemory("time", lb, "english", currentRank[lb].rank, true);
+      void DB.updateLbMemory("time", lb, "english", rank, true);
       if (memory !== 0) {
         $(`#leaderboardsWrapper table.${side} tfoot tr td .top`).append(
           ` (<i class="fas fa-fw fa-angle-up"></i>${Math.abs(
@@ -175,7 +276,7 @@ function checkLbMemory(lb: LbKey): void {
         );
       }
     } else if (difference < 0) {
-      DB.updateLbMemory("time", lb, "english", currentRank[lb].rank, true);
+      void DB.updateLbMemory("time", lb, "english", rank, true);
       if (memory !== 0) {
         $(`#leaderboardsWrapper table.${side} tfoot tr td .top`).append(
           ` (<i class="fas fa-fw fa-angle-down"></i>${Math.abs(
@@ -193,68 +294,88 @@ function checkLbMemory(lb: LbKey): void {
   }
 }
 
-function fillTable(lb: LbKey, prepend?: number): void {
-  if (!currentData[lb]) {
+async function fillTable(lb: LbKey): Promise<void> {
+  if (currentData[lb] === undefined) {
     return;
   }
 
-  let side;
-  if (lb === 15) {
+  let side: string;
+  if (lb === "15") {
     side = "left";
   } else {
     side = "right";
   }
+
+  if (currentData[lb].length === 0) {
+    $(`#leaderboardsWrapper table.${side} tbody`).html(
+      "<tr><td colspan='7'>No results found</td></tr>"
+    );
+  }
   const loggedInUserName = DB.getSnapshot()?.name;
 
-  let a = currentData[lb].length - leaderboardSingleLimit;
-  let b = currentData[lb].length;
-  if (a < 0) a = 0;
-  if (prepend) {
-    a = 0;
-    b = prepend;
-  }
   let html = "";
-  for (let i = a; i < b; i++) {
-    const entry = currentData[lb][i] as MonkeyTypes.LeaderboardEntry;
-    if (!entry) {
+  for (let i = 0; i < currentData[lb].length; i++) {
+    const entry = currentData[lb][i];
+    if (entry === undefined) {
       break;
     }
-    if (entry.hidden) return;
     let meClassString = "";
-    if (entry.name == loggedInUserName) {
+    if (entry.name === loggedInUserName) {
       meClassString = ' class="me"';
     }
     const date = new Date(entry.timestamp);
+
+    if (currentTimeRange === "daily" && !entry.rank) {
+      entry.rank = i + 1;
+    }
+
+    let avatar = `<div class="avatarPlaceholder"><i class="fas fa-user-circle"></i></div>`;
+
+    if (entry.discordAvatar !== undefined) {
+      avatar = `<div class="avatarPlaceholder"><i class="fas fa-circle-notch fa-spin"></i></div>`;
+    }
+
     html += `
     <tr ${meClassString}>
     <td>${
       entry.rank === 1 ? '<i class="fas fa-fw fa-crown"></i>' : entry.rank
     }</td>
-    <td>${entry.name}</td>
-    <td class="alignRight">${(Config.alwaysShowCPM
-      ? entry.wpm * 5
-      : entry.wpm
-    ).toFixed(2)}<br><div class="sub">${entry.acc.toFixed(2)}%</div></td>
-    <td class="alignRight">${(Config.alwaysShowCPM
-      ? entry.raw * 5
-      : entry.raw
-    ).toFixed(2)}<br><div class="sub">${
-      !entry.consistency || entry.consistency === "-"
-        ? "-"
-        : entry.consistency.toFixed(2) + "%"
-    }</div></td>
-    <td class="alignRight">time<br><div class="sub">${lb}</div></td>
+    <td>
+    <div class="avatarNameBadge">
+      <div class="lbav">${avatar}</div>
+      <a href="${location.origin}/profile/${
+      entry.uid
+    }?isUid" class="entryName" uid=${entry.uid} router-link>${entry.name}</a>
+      <div class="flagsAndBadge">
+        ${getHtmlByUserFlags(entry)}
+        ${entry.badgeId ? getBadgeHTMLbyId(entry.badgeId) : ""}
+      </div>
+    </div>
+    </td>
+    <td class="alignRight">${Format.typingSpeed(entry.wpm, {
+      showDecimalPlaces: true,
+    })}<br>
+    <div class="sub">${Format.percentage(entry.acc, {
+      showDecimalPlaces: true,
+    })}</div></td>
+    <td class="alignRight">${Format.typingSpeed(entry.raw, {
+      showDecimalPlaces: true,
+    })}<br>
+    <div class="sub">${Format.percentage(entry.consistency, {
+      showDecimalPlaces: true,
+    })}</div></td>
     <td class="alignRight">${format(date, "dd MMM yyyy")}<br>
     <div class='sub'>${format(date, "HH:mm")}</div></td>
   </tr>
   `;
   }
-  if (!prepend) {
-    $(`#leaderboardsWrapper table.${side} tbody`).append(html);
-  } else {
-    $(`#leaderboardsWrapper table.${side} tbody`).prepend(html);
-  }
+  $(`#leaderboardsWrapper table.${side} tbody`).html(html);
 }
+
+const showYesterdayButton = $("#leaderboardsWrapper .showYesterdayButton");
+const showYesterdayButtonText = $(
+  "#leaderboardsWrapper .showYesterdayButton .text"
+);
 
 export function hide(): void {
   $("#leaderboardsWrapper")
@@ -264,81 +385,163 @@ export function hide(): void {
       {
         opacity: 0,
       },
-      100,
+      Misc.applyReducedMotion(100),
       () => {
-        clearBody(15);
-        clearBody(60);
-        clearFoot(15);
-        clearFoot(60);
+        languageSelector?.destroy();
+        languageSelector = undefined;
+        clearBody("15");
+        clearBody("60");
+        clearFoot("15");
+        clearFoot("60");
         reset();
         stopTimer();
+        showingYesterday = false;
+        updateYesterdayButton();
         $("#leaderboardsWrapper").addClass("hidden");
+        Skeleton.remove(wrapperId);
       }
     );
 }
 
-async function update(): Promise<void> {
-  $("#leaderboardsWrapper .buttons .button").removeClass("active");
-  $(
-    `#leaderboardsWrapper .buttons .button[board=${currentLeaderboard}]`
-  ).addClass("active");
+function updateTitle(): void {
+  const el = $("#leaderboardsWrapper .mainTitle");
 
-  showLoader(15);
-  showLoader(60);
+  const timeRangeString = currentTimeRange === "daily" ? "Daily" : "All-Time";
+  const capitalizedLanguage =
+    currentLanguage.charAt(0).toUpperCase() + currentLanguage.slice(1);
 
-  const leaderboardRequests = [
-    Ape.leaderboards.get("english", "time", "15", 0),
-    Ape.leaderboards.get("english", "time", "60", 0),
-  ];
+  let text = `${timeRangeString} ${capitalizedLanguage} Leaderboards`;
 
-  if (Auth.currentUser) {
-    leaderboardRequests.push(
-      Ape.leaderboards.getRank("english", "time", "15"),
-      Ape.leaderboards.getRank("english", "time", "60")
-    );
+  if (showingYesterday && currentTimeRange !== "allTime") {
+    text += " (Yesterday)";
   }
 
-  const responses = await Promise.all(leaderboardRequests);
+  el.text(text);
+}
 
-  const failedResponse = responses.find((response) => response.status !== 200);
-  if (failedResponse) {
-    return Notifications.add(
-      "Failed to load leaderboards: " + failedResponse.message,
+function updateYesterdayButton(): void {
+  showYesterdayButton.addClass("hidden");
+  if (currentTimeRange === "daily") {
+    showYesterdayButton.removeClass("hidden");
+  }
+  if (showingYesterday) {
+    showYesterdayButtonText.text("Show today");
+  } else {
+    showYesterdayButtonText.text("Show yesterday");
+  }
+}
+
+function getDailyLeaderboardQuery(): { isDaily: boolean; daysBefore?: 1 } {
+  const isDaily = currentTimeRange === "daily";
+  const isViewingDailyAndButtonIsActive = isDaily && showingYesterday;
+  const daysBefore = isViewingDailyAndButtonIsActive ? 1 : undefined;
+
+  return {
+    isDaily,
+    daysBefore,
+  };
+}
+
+async function update(): Promise<void> {
+  leftScrollEnabled = false;
+  rightScrollEnabled = false;
+
+  showLoader("15");
+  showLoader("60");
+
+  const { isDaily, daysBefore } = getDailyLeaderboardQuery();
+  const requestData = isDaily
+    ? Ape.leaderboards.getDaily
+    : Ape.leaderboards.get;
+  const requestRank = isDaily
+    ? Ape.leaderboards.getDailyRank
+    : Ape.leaderboards.getRank;
+
+  const baseQuery = {
+    language: currentLanguage,
+    mode: "time" as Mode,
+    daysBefore,
+  };
+
+  const fallbackResponse = { status: 200, body: { message: "", data: null } };
+
+  const lbRank15Request = isAuthenticated()
+    ? requestRank({ query: { ...baseQuery, mode2: "15" } })
+    : fallbackResponse;
+
+  const lbRank60Request = isAuthenticated()
+    ? requestRank({ query: { ...baseQuery, mode2: "60" } })
+    : fallbackResponse;
+  const [lb15Data, lb60Data, lb15Rank, lb60Rank] = await Promise.all([
+    requestData({ query: { ...baseQuery, mode2: "15" } }),
+    requestData({ query: { ...baseQuery, mode2: "60" } }),
+    lbRank15Request,
+    lbRank60Request,
+  ]);
+
+  if (
+    lb15Data.status !== 200 ||
+    lb60Data.status !== 200 ||
+    lb15Rank.status !== 200 ||
+    lb60Rank.status !== 200
+  ) {
+    const failedResponses = [lb15Data, lb60Data, lb15Rank, lb60Rank].filter(
+      (it) => it.status !== 200
+    );
+
+    hideLoader("15");
+    hideLoader("60");
+    Notifications.add(
+      "Failed to load leaderboards: " + failedResponses[0]?.body.message,
       -1
     );
+    return;
   }
 
-  const [lb15Data, lb60Data, lb15Rank, lb60Rank] = responses.map(
-    (response) => response.data
-  );
+  if (lb15Data.body.data !== null) currentData["15"] = lb15Data.body.data;
+  if (lb60Data.body.data !== null) currentData["60"] = lb60Data.body.data;
+  if (lb15Rank.body.data !== null) currentRank["15"] = lb15Rank.body.data;
+  if (lb60Rank.body.data !== null) currentRank["60"] = lb60Rank.body.data;
 
-  currentData[15] = lb15Data;
-  currentData[60] = lb60Data;
-  currentRank[15] = lb15Rank;
-  currentRank[60] = lb60Rank;
+  const leaderboardKeys: LbKey[] = ["15", "60"];
 
-  const leaderboardKeys: LbKey[] = [15, 60];
+  leaderboardKeys.forEach(async (lbKey) => {
+    hideLoader(lbKey);
+    clearBody(lbKey);
+    updateFooter(lbKey);
+    checkLbMemory(lbKey);
+    await fillTable(lbKey);
 
-  leaderboardKeys.forEach((leaderboardTime: LbKey) => {
-    hideLoader(leaderboardTime);
-    clearBody(leaderboardTime);
-    updateFooter(leaderboardTime);
-    checkLbMemory(leaderboardTime);
-    fillTable(leaderboardTime);
+    void getAvatarUrls(currentData[lbKey]).then((urls) => {
+      currentAvatars[lbKey] = urls;
+      fillAvatars(lbKey);
+    });
   });
 
   $("#leaderboardsWrapper .leftTableWrapper").removeClass("invisible");
   $("#leaderboardsWrapper .rightTableWrapper").removeClass("invisible");
+
+  updateTitle();
+  updateYesterdayButton();
+  $("#leaderboardsWrapper .buttons .button").removeClass("active");
+  $(
+    `#leaderboardsWrapper .buttonGroup.timeRange .button.` + currentTimeRange
+  ).addClass("active");
+  $("#leaderboardsWrapper #leaderboards .leftTableWrapper").scrollTop(0);
+  $("#leaderboardsWrapper #leaderboards .rightTableWrapper").scrollTop(0);
+
+  leftScrollEnabled = true;
+  rightScrollEnabled = true;
 }
 
 async function requestMore(lb: LbKey, prepend = false): Promise<void> {
-  if (prepend && currentData[lb][0].rank === 1) return;
+  if (prepend && currentData[lb][0]?.rank === 1) return;
   if (requesting[lb]) return;
   requesting[lb] = true;
   showLoader(lb);
-  let skipVal = currentData[lb][currentData[lb].length - 1].rank;
+  let skipVal = Arrays.lastElementFromArray(currentData[lb])?.rank as number;
   if (prepend) {
-    skipVal = currentData[lb][0].rank - leaderboardSingleLimit;
+    skipVal = (currentData[lb][0]?.rank ?? 0) - leaderboardSingleLimit;
   }
   let limitVal;
   if (skipVal < 0) {
@@ -346,19 +549,34 @@ async function requestMore(lb: LbKey, prepend = false): Promise<void> {
     skipVal = 0;
   }
 
-  const response = await Ape.leaderboards.get(
-    "english",
-    "time",
-    lb,
-    skipVal,
-    limitVal
-  );
-  const data: MonkeyTypes.LeaderboardEntry[] = response.data;
+  const { isDaily, daysBefore } = getDailyLeaderboardQuery();
 
-  if (response.status !== 200 || data.length === 0) {
+  const requestData = isDaily
+    ? Ape.leaderboards.getDaily
+    : Ape.leaderboards.get;
+
+  const response = await requestData({
+    query: {
+      language: currentLanguage,
+      mode: "time",
+      mode2: lb,
+      skip: skipVal,
+      limit: limitVal,
+      daysBefore,
+    },
+  });
+
+  if (
+    response.status !== 200 ||
+    response.body.data === null ||
+    response.body.data.length === 0
+  ) {
     hideLoader(lb);
+    requesting[lb] = false;
     return;
   }
+  const data = response.body.data;
+
   if (prepend) {
     currentData[lb].unshift(...data);
   } else {
@@ -367,7 +585,17 @@ async function requestMore(lb: LbKey, prepend = false): Promise<void> {
   if (prepend && !limitVal) {
     limitVal = leaderboardSingleLimit - 1;
   }
-  fillTable(lb, limitVal);
+  await fillTable(lb);
+
+  void getAvatarUrls(data).then((urls) => {
+    if (prepend) {
+      currentAvatars[lb].unshift(...urls);
+    } else {
+      currentAvatars[lb].push(...urls);
+    }
+    fillAvatars(lb);
+  });
+
   hideLoader(lb);
   requesting[lb] = false;
 }
@@ -375,8 +603,21 @@ async function requestMore(lb: LbKey, prepend = false): Promise<void> {
 async function requestNew(lb: LbKey, skip: number): Promise<void> {
   showLoader(lb);
 
-  const response = await Ape.leaderboards.get("english", "time", lb, skip);
-  const data: MonkeyTypes.LeaderboardEntry[] = response.data;
+  const { isDaily, daysBefore } = getDailyLeaderboardQuery();
+
+  const requestData = isDaily
+    ? Ape.leaderboards.getDaily
+    : Ape.leaderboards.get;
+
+  const response = await requestData({
+    query: {
+      language: currentLanguage,
+      mode: "time",
+      mode2: lb,
+      skip,
+      daysBefore,
+    },
+  });
 
   if (response.status === 503) {
     Notifications.add(
@@ -388,18 +629,71 @@ async function requestNew(lb: LbKey, skip: number): Promise<void> {
 
   clearBody(lb);
   currentData[lb] = [];
-  if (response.status !== 200 || data.length === 0) {
+  currentAvatars[lb] = [];
+  if (
+    response.status !== 200 ||
+    response.body.data === null ||
+    response.body.data.length === 0
+  ) {
     hideLoader(lb);
     return;
   }
+
+  const data = response.body.data;
   currentData[lb] = data;
-  fillTable(lb);
+  await fillTable(lb);
+
+  void getAvatarUrls(data).then((urls) => {
+    currentAvatars[lb] = urls;
+    fillAvatars(lb);
+  });
+
   hideLoader(lb);
 }
 
+async function getAvatarUrls(
+  data: LeaderboardEntry[]
+): Promise<(string | null)[]> {
+  return Promise.allSettled(
+    data.map(async (entry) =>
+      Misc.getDiscordAvatarUrl(entry.discordId, entry.discordAvatar)
+    )
+  ).then((promises) => {
+    return promises.map((promise) => {
+      if (promise.status === "fulfilled") {
+        return promise.value;
+      }
+      return null;
+    });
+  });
+}
+
+function fillAvatars(lb: LbKey): void {
+  const side = lb === "15" ? "left" : "right";
+  const elements = $(`#leaderboardsWrapper table.${side} tbody .lbav`);
+
+  for (const [index, url] of currentAvatars[lb].entries()) {
+    const element = elements[index] as HTMLElement;
+    if (url !== null) {
+      $(element).html(
+        `<div class="avatar" style="background-image:url(${url})"></div>`
+      );
+    } else {
+      $(element).html(
+        `<div class="avatarPlaceholder"><i class="fas fa-user-circle"></i></div>`
+      );
+    }
+  }
+}
+
 export function show(): void {
-  if ($("#leaderboardsWrapper").hasClass("hidden")) {
-    if (Auth.currentUser) {
+  if (!ConnectionState.get()) {
+    Notifications.add("You can't view leaderboards while offline", 0);
+    return;
+  }
+  Skeleton.append(wrapperId, "popups");
+  if (!Misc.isPopupVisible("leaderboardsWrapper")) {
+    if (isAuthenticated()) {
       $("#leaderboardsWrapper #leaderboards .rightTableJumpToMe").removeClass(
         "disabled"
       );
@@ -414,15 +708,41 @@ export function show(): void {
         "disabled"
       );
     }
-    if (Config.alwaysShowCPM) {
-      $("#leaderboards table thead tr td:nth-child(3)").html(
-        'cpm<br><div class="sub">accuracy</div>'
-      );
-    } else {
-      $("#leaderboards table thead tr td:nth-child(3)").html(
-        'wpm<br><div class="sub">accuracy</div>'
-      );
-    }
+    $("#leaderboards table thead tr td:nth-child(3)").html(
+      Config.typingSpeedUnit + '<br><div class="sub">accuracy</div>'
+    );
+
+    languageSelector = new SlimSelect({
+      select:
+        "#leaderboardsWrapper #leaderboards .leaderboardsTop .buttonGroup.timeRange .languageSelect",
+      settings: {
+        showSearch: false,
+        // contentLocation: document.querySelector(
+        //   "#leaderboardsWrapper"
+        // ) as HTMLElement,
+        // contentPosition: "relative",
+      },
+      data: [
+        "english",
+        "spanish",
+        "german",
+        "french",
+        "portuguese",
+        "indonesian",
+        "italian",
+      ].map((lang) => ({
+        value: lang,
+        text: lang,
+        selected: lang === currentLanguage,
+      })),
+      events: {
+        afterChange: (newVal): void => {
+          currentLanguage = newVal[0]?.value as string;
+          updateTitle();
+          void update();
+        },
+      },
+    });
     $("#leaderboardsWrapper")
       .stop(true, true)
       .css("opacity", 0)
@@ -431,9 +751,9 @@ export function show(): void {
         {
           opacity: 1,
         },
-        125,
+        Misc.applyReducedMotion(125),
         () => {
-          update();
+          void update();
           startTimer();
         }
       );
@@ -446,49 +766,100 @@ $("#leaderboardsWrapper").on("click", (e) => {
   }
 });
 
-// $("#leaderboardsWrapper .buttons .button").on("click",(e) => {
-//   currentLeaderboard = $(e.target).attr("board");
-//   update();
+let languageSelector: SlimSelect | undefined = undefined;
+
+// const languageSelector = new SlimSelect({
+//   select:
+//     "#leaderboardsWrapper #leaderboards .leaderboardsTop .buttonGroup.timeRange .languageSelect",
+//   settings: {
+//     showSearch: false,
+//     // contentLocation: document.querySelector(
+//     //   "#leaderboardsWrapper"
+//     // ) as HTMLElement,
+//     // contentPosition: "relative",
+//   },
+//   data: [
+//     {
+//       value: "english",
+//       text: "english",
+//       selected: true,
+//     },
+//     {
+//       value: "spanish",
+//       text: "spanish",
+//     },
+//     {
+//       value: "german",
+//       text: "german",
+//     },
+//     {
+//       value: "french",
+//       text: "french",
+//     },
+//     {
+//       value: "portuguese",
+//       text: "portuguese",
+//     },
+//     {
+//       value: "indonesian",
+//       text: "indonesian",
+//     },
+//     {
+//       value: "italian",
+//       text: "italian",
+//     },
+//   ],
+//   events: {
+//     afterChange: (newVal): void => {
+//       currentLanguage = newVal[0]?.value as string;
+//       updateTitle();
+//       void update();
+//     },
+//   },
 // });
 
 let leftScrollEnabled = true;
 
-$("#leaderboardsWrapper #leaderboards .leftTableWrapper").scroll((e) => {
+$("#leaderboardsWrapper #leaderboards .leftTableWrapper").on("scroll", (e) => {
   if (!leftScrollEnabled) return;
   const elem = $(e.currentTarget);
   if (Math.round(elem.scrollTop() as number) <= 50) {
-    requestMore(15, true);
+    void debouncedRequestMore("15", true);
   }
 });
 
-$("#leaderboardsWrapper #leaderboards .leftTableWrapper").scroll((e) => {
+const debouncedRequestMore = debounce(500, requestMore);
+
+$("#leaderboardsWrapper #leaderboards .leftTableWrapper").on("scroll", (e) => {
   if (!leftScrollEnabled) return;
   const elem = $(e.currentTarget);
+  if (elem === undefined || elem[0] === undefined) return;
   if (
     Math.round(elem[0].scrollHeight - (elem.scrollTop() as number)) <=
     Math.round(elem.outerHeight() as number) + 50
   ) {
-    requestMore(15);
+    void debouncedRequestMore("15");
   }
 });
 
 let rightScrollEnabled = true;
 
-$("#leaderboardsWrapper #leaderboards .rightTableWrapper").scroll((e) => {
+$("#leaderboardsWrapper #leaderboards .rightTableWrapper").on("scroll", (e) => {
   if (!rightScrollEnabled) return;
   const elem = $(e.currentTarget);
   if (Math.round(elem.scrollTop() as number) <= 50) {
-    requestMore(60, true);
+    void debouncedRequestMore("60", true);
   }
 });
 
-$("#leaderboardsWrapper #leaderboards .rightTableWrapper").scroll((e) => {
+$("#leaderboardsWrapper #leaderboards .rightTableWrapper").on("scroll", (e) => {
   const elem = $(e.currentTarget);
+  if (elem === undefined || elem[0] === undefined) return;
   if (
     Math.round(elem[0].scrollHeight - (elem.scrollTop() as number)) <=
     Math.round((elem.outerHeight() as number) + 50)
   ) {
-    requestMore(60);
+    void debouncedRequestMore("60");
   }
 });
 
@@ -497,7 +868,7 @@ $("#leaderboardsWrapper #leaderboards .leftTableJumpToTop").on(
   async () => {
     leftScrollEnabled = false;
     $("#leaderboardsWrapper #leaderboards .leftTableWrapper").scrollTop(0);
-    await requestNew(15, 0);
+    await requestNew("15", 0);
     leftScrollEnabled = true;
   }
 );
@@ -505,9 +876,9 @@ $("#leaderboardsWrapper #leaderboards .leftTableJumpToTop").on(
 $("#leaderboardsWrapper #leaderboards .leftTableJumpToMe").on(
   "click",
   async () => {
-    if (currentRank[15].rank === undefined) return;
+    if (!currentRank["15"]?.rank) return;
     leftScrollEnabled = false;
-    await requestNew(15, currentRank[15].rank - leaderboardSingleLimit / 2);
+    await requestNew("15", currentRank["15"].rank - leaderboardSingleLimit / 2);
     const rowHeight = $(
       "#leaderboardsWrapper #leaderboards .leftTableWrapper table tbody td"
     ).outerHeight() as number;
@@ -515,7 +886,7 @@ $("#leaderboardsWrapper #leaderboards .leftTableJumpToMe").on(
       {
         scrollTop:
           rowHeight *
-            Math.min(currentRank[15].rank, leaderboardSingleLimit / 2) -
+            Math.min(currentRank["15"].rank, leaderboardSingleLimit / 2) -
           ($(
             "#leaderboardsWrapper #leaderboards .leftTableWrapper"
           ).outerHeight() as number) /
@@ -534,7 +905,7 @@ $("#leaderboardsWrapper #leaderboards .rightTableJumpToTop").on(
   async () => {
     rightScrollEnabled = false;
     $("#leaderboardsWrapper #leaderboards .rightTableWrapper").scrollTop(0);
-    await requestNew(60, 0);
+    await requestNew("60", 0);
     rightScrollEnabled = true;
   }
 );
@@ -542,9 +913,9 @@ $("#leaderboardsWrapper #leaderboards .rightTableJumpToTop").on(
 $("#leaderboardsWrapper #leaderboards .rightTableJumpToMe").on(
   "click",
   async () => {
-    if (currentRank[60].rank === undefined) return;
+    if (!currentRank["60"]?.rank) return;
     leftScrollEnabled = false;
-    await requestNew(60, currentRank[60].rank - leaderboardSingleLimit / 2);
+    await requestNew("60", currentRank["60"].rank - leaderboardSingleLimit / 2);
     const rowHeight = $(
       "#leaderboardsWrapper #leaderboards .rightTableWrapper table tbody td"
     ).outerHeight() as number;
@@ -552,7 +923,7 @@ $("#leaderboardsWrapper #leaderboards .rightTableJumpToMe").on(
       {
         scrollTop:
           rowHeight *
-            Math.min(currentRank[60].rank, leaderboardSingleLimit / 2) -
+            Math.min(currentRank["60"].rank, leaderboardSingleLimit / 2) -
           ($(
             "#leaderboardsWrapper #leaderboards .rightTableWrapper"
           ).outerHeight() as number) /
@@ -566,16 +937,52 @@ $("#leaderboardsWrapper #leaderboards .rightTableJumpToMe").on(
   }
 );
 
-$(document).on("click", "#top #menu .text-button", (e) => {
-  if ($(e.currentTarget).hasClass("leaderboards")) {
-    show();
-  }
-  return false;
+$(
+  "#leaderboardsWrapper #leaderboards .leaderboardsTop .buttonGroup.timeRange .allTime"
+).on("click", () => {
+  currentTimeRange = "allTime";
+  currentLanguage = "english";
+  languageSelector?.disable();
+  languageSelector?.setSelected("english");
+  void update();
+});
+
+$(
+  "#leaderboardsWrapper #leaderboards .leaderboardsTop .buttonGroup.timeRange .daily"
+).on("click", () => {
+  currentTimeRange = "daily";
+  updateYesterdayButton();
+  languageSelector?.enable();
+  void update();
+});
+
+$("#leaderboardsWrapper .showYesterdayButton").on("click", () => {
+  showingYesterday = !showingYesterday;
+  void update();
 });
 
 $(document).on("keydown", (event) => {
-  if (event.key === "Escape" && !$("#leaderboardsWrapper").hasClass("hidden")) {
+  if (event.key === "Escape" && Misc.isPopupVisible("leaderboardsWrapper")) {
     hide();
     event.preventDefault();
   }
 });
+
+$("header nav").on("click", ".textButton", (e) => {
+  if ($(e.currentTarget).hasClass("leaderboards")) {
+    show();
+  }
+});
+
+$(".pageTest").on("click", "#dailyLeaderboardRank", () => {
+  currentTimeRange = "daily";
+  updateYesterdayButton();
+  languageSelector?.enable();
+
+  currentLanguage = TestStats.lastResult.language;
+  languageSelector?.setSelected(currentLanguage);
+  void update();
+  show();
+});
+
+Skeleton.save(wrapperId);

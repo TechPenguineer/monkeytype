@@ -1,10 +1,11 @@
-import { mapRange } from "../utils/misc";
+import { mapRange } from "@monkeytype/util/numbers";
 import Config from "../config";
 import * as ConfigEvent from "../observables/config-event";
-import * as TestActive from "../states/test-active";
+import * as TestState from "../test/test-state";
+import * as KeyConverter from "../utils/key-converter";
 
 ConfigEvent.subscribe((eventKey) => {
-  if (eventKey === "monkey" && TestActive.get()) {
+  if (eventKey === "monkey" && TestState.isActive) {
     if (Config.monkey) {
       $("#monkey").removeClass("hidden");
     } else {
@@ -15,6 +16,7 @@ ConfigEvent.subscribe((eventKey) => {
 
 let left = false;
 let right = false;
+const middleKeysState = { left: false, right: false, last: "right" };
 
 // 0 hand up
 // 1 hand down
@@ -37,8 +39,6 @@ const elementsFast = {
   "10": document.querySelector("#monkey .fast .left"),
   "11": document.querySelector("#monkey .fast .both"),
 };
-
-let last = "right";
 
 function toBit(b: boolean): "1" | "0" {
   return b ? "1" : "0";
@@ -66,29 +66,72 @@ export function updateFastOpacity(num: number): void {
   const opacity = mapRange(num, 130, 180, 0, 1);
   $("#monkey .fast").animate({ opacity: opacity }, 1000);
   let animDuration = mapRange(num, 130, 180, 0.25, 0.01);
-  if (animDuration == 0.25) animDuration = 0;
+  if (animDuration === 0.25) animDuration = 0;
   $("#monkey").css({ animationDuration: animDuration + "s" });
 }
 
-export function type(): void {
+export function type(event: JQuery.KeyDownEvent): void {
   if (!Config.monkey) return;
-  if (!left && last == "right") {
-    left = true;
-    last = "left";
-  } else if (!right) {
-    right = true;
-    last = "right";
+
+  const { leftSide, rightSide } = KeyConverter.keycodeToKeyboardSide(
+    event.code as KeyConverter.Keycode
+  );
+  if (leftSide && rightSide) {
+    // if its a middle key handle special case
+    if (middleKeysState.last === "left") {
+      if (!right) {
+        right = true;
+        middleKeysState.last = "right";
+        middleKeysState.right = true;
+      } else if (!left) {
+        left = true;
+        middleKeysState.last = "left";
+        middleKeysState.left = true;
+      }
+    } else {
+      if (!left) {
+        left = true;
+        middleKeysState.last = "left";
+        middleKeysState.left = true;
+      } else if (!right) {
+        right = true;
+        middleKeysState.last = "right";
+        middleKeysState.right = true;
+      }
+    }
+  } else {
+    // normal key set hand
+    left = left || leftSide;
+    right = right || rightSide;
   }
+
   update();
 }
 
-export function stop(): void {
+export function stop(event: JQuery.KeyUpEvent): void {
   if (!Config.monkey) return;
-  if (left) {
-    left = false;
-  } else if (right) {
-    right = false;
+
+  const { leftSide, rightSide } = KeyConverter.keycodeToKeyboardSide(
+    event.code as KeyConverter.Keycode
+  );
+  if (leftSide && rightSide) {
+    // if middle key handle special case
+    if (middleKeysState.left && middleKeysState.last === "left") {
+      left = false;
+      middleKeysState.left = false;
+    } else if (middleKeysState.right && middleKeysState.last === "right") {
+      right = false;
+      middleKeysState.right = false;
+    } else {
+      left = left && !middleKeysState.left;
+      right = right && !middleKeysState.right;
+    }
+  } else {
+    // normal key unset hand
+    left = left && !leftSide;
+    right = right && !rightSide;
   }
+
   update();
 }
 
@@ -105,5 +148,7 @@ export function hide(): void {
     .css("opacity", 1)
     .animate({ opacity: 1 }, 125, () => {
       $("#monkey").addClass("hidden");
+      $("#monkey .fast").stop(true, true).css("opacity", 0);
+      $("#monkey").stop(true, true).css({ animationDuration: "0s" });
     });
 }
