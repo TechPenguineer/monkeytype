@@ -1,32 +1,30 @@
 import { stemmer } from "stemmer";
 import levenshtein from "damerau-levenshtein";
 
-export interface SearchService<T> {
+export type SearchService<T> = {
   query: (query: string) => SearchResult<T>;
-}
+};
 
-interface SearchServiceOptions {
+type SearchServiceOptions = {
   fuzzyMatchSensitivity: number;
   scoreForSimilarMatch: number;
   scoreForExactMatch: number;
-}
+};
 
-interface InternalDocument {
+type InternalDocument = {
   id: number;
-}
+  maxTermFrequency: number;
+  termFrequencies: Record<string, number>;
+};
 
-interface ReverseIndex {
-  [key: string]: Set<InternalDocument>;
-}
+type ReverseIndex = Record<string, Set<InternalDocument>>;
 
-interface TokenMap {
-  [key: string]: Set<string>;
-}
+type TokenMap = Record<string, Set<string>>;
 
-interface SearchResult<T> {
+type SearchResult<T> = {
   results: T[];
   matchedQueryTerms: string[];
-}
+};
 
 export type TextExtractor<T> = (document: T) => string;
 
@@ -47,8 +45,21 @@ function inverseDocumentFrequency(
   return Math.log10(numberOfDocuments / numberOfDocumentsWithTerm);
 }
 
+const ALPHA = 0.4; // Smoothing term that dampens the contribution of tf/max tf
+
+function normalizedTermFrequency(
+  term: string,
+  document: InternalDocument
+): number {
+  return (
+    ALPHA +
+    (1 - ALPHA) *
+      ((document.termFrequencies[term] as number) / document.maxTermFrequency)
+  );
+}
+
 function tokenize(text: string): string[] {
-  return text.match(/[^\\\][.,"/#!?$%^&*;:{}=\-_`~()\s]+/g) || [];
+  return text.match(/[^\\\][.,"/#!?$%^&*;:{}=\-_`~()\s]+/g) ?? [];
 }
 
 export const buildSearchService = <T>(
@@ -64,21 +75,37 @@ export const buildSearchService = <T>(
 
     const internalDocument: InternalDocument = {
       id: documentIndex,
+      termFrequencies: {},
+      maxTermFrequency: 0,
     };
+
+    let maxTermFrequency = 0;
 
     rawTokens.forEach((token) => {
       const stemmedToken = stemmer(token);
 
-      if (!(stemmedToken in normalizedTokenToOriginal)) {
+      if (!Object.hasOwn(normalizedTokenToOriginal, stemmedToken)) {
         normalizedTokenToOriginal[stemmedToken] = new Set<string>();
       }
-      normalizedTokenToOriginal[stemmedToken].add(token);
+      normalizedTokenToOriginal[stemmedToken]?.add(token);
 
-      if (!(stemmedToken in reverseIndex)) {
+      if (!Object.hasOwn(reverseIndex, stemmedToken)) {
         reverseIndex[stemmedToken] = new Set<InternalDocument>();
       }
-      reverseIndex[stemmedToken].add(internalDocument);
+      reverseIndex[stemmedToken]?.add(internalDocument);
+
+      if (!(stemmedToken in internalDocument.termFrequencies)) {
+        internalDocument.termFrequencies[stemmedToken] = 0;
+      }
+
+      (internalDocument.termFrequencies[stemmedToken] as number)++;
+      maxTermFrequency = Math.max(
+        maxTermFrequency,
+        internalDocument.termFrequencies[stemmedToken] as number
+      );
     });
+
+    internalDocument.maxTermFrequency = maxTermFrequency;
   });
 
   const tokenSet = Object.keys(reverseIndex);
@@ -107,15 +134,16 @@ export const buildSearchService = <T>(
         const isSimilar = similarity >= 1 - options.fuzzyMatchSensitivity;
 
         if (matchesSearchToken || isSimilar) {
-          const documentMatches = reverseIndex[token];
+          const documentMatches = reverseIndex[token] as Set<InternalDocument>;
 
           const idf = inverseDocumentFrequency(
             documents.length,
             documentMatches.size
           );
-
           documentMatches.forEach((document) => {
             const currentScore = results.get(document.id) ?? 0;
+
+            const termFrequency = normalizedTermFrequency(token, document);
 
             const scoreForExactMatch = matchesSearchToken
               ? options.scoreForExactMatch
@@ -125,12 +153,12 @@ export const buildSearchService = <T>(
               : 0;
             const score = scoreForExactMatch + scoreForSimilarity;
 
-            const scoreForToken = score * idf;
+            const scoreForToken = score * idf * termFrequency;
 
             results.set(document.id, currentScore + scoreForToken);
           });
 
-          normalizedTokenToOriginal[token].forEach((originalToken) => {
+          normalizedTokenToOriginal[token]?.forEach((originalToken) => {
             matchedTokens.add(originalToken);
           });
         }
@@ -141,7 +169,7 @@ export const buildSearchService = <T>(
       .sort((match1, match2) => {
         return match2[1] - match1[1];
       })
-      .map((match) => documents[match[0]]);
+      .map((match) => documents[match[0]]) as T[];
 
     searchResult.results = orderedResults;
     searchResult.matchedQueryTerms = [...matchedTokens];

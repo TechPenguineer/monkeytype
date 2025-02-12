@@ -1,12 +1,13 @@
 {
   "name": "toki_pona_ku_suli",
-  "leftToRight": true,
   "noLazyMode": true,
   "words": [
     "a",
     "akesi",
     "ala",
     "alasa",
+    "ale",
+    "ali",
     "anpa",
     "ante",
     "anu",
@@ -81,7 +82,6 @@
     "nasa",
     "nasin",
     "nena",
-    "namako",
     "ni",
     "nimi",
     "noka",

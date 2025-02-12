@@ -1,19 +1,45 @@
 import Config from "../config";
 import * as Misc from "../utils/misc";
+import * as JSONData from "../utils/json-data";
 import { capsState } from "./caps-warning";
+import * as Notifications from "../elements/notifications";
+
+let isAltGrPressed = false;
+const isPunctuationPattern = /\p{P}/u;
 
 export async function getCharFromEvent(
-  event: JQuery.KeyDownEvent
+  event: JQuery.KeyDownEvent | JQuery.KeyUpEvent
 ): Promise<string | null> {
-  function emulatedLayoutShouldShiftKey(
-    event: JQuery.KeyDownEvent,
-    newKeyPreview: string
-  ): boolean {
-    if (capsState) return Misc.isASCIILetter(newKeyPreview) !== event.shiftKey;
-    return event.shiftKey;
-  }
+  function emulatedLayoutGetVariant(
+    event: JQuery.KeyDownEvent | JQuery.KeyUpEvent,
+    keyVariants: string
+  ): string | undefined {
+    let isCapitalized = event.shiftKey;
+    const altGrIndex = isAltGrPressed && keyVariants.length > 2 ? 2 : 0;
+    const isNotPunctuation = !isPunctuationPattern.test(
+      keyVariants.slice(altGrIndex, altGrIndex + 2)
+    );
+    if (capsState && isNotPunctuation) {
+      isCapitalized = !event.shiftKey;
+    }
 
-  const layout = await Misc.getLayout(Config.layout);
+    const altVersion = keyVariants[(isCapitalized ? 1 : 0) + altGrIndex] ?? "";
+    const nonAltVersion = keyVariants[isCapitalized ? 1 : 0] ?? "";
+    const defaultVersion = keyVariants[0];
+
+    return altVersion || nonAltVersion || defaultVersion;
+  }
+  let layout;
+
+  try {
+    layout = await JSONData.getLayout(Config.layout);
+  } catch (e) {
+    Notifications.add(
+      Misc.createErrorMessage(e, "Failed to emulate event"),
+      -1
+    );
+    return null;
+  }
 
   let keyEventCodes: string[] = [];
 
@@ -173,33 +199,48 @@ export async function getCharFromEvent(
     ];
   }
 
+  if (!keyEventCodes.includes(event.code)) {
+    return null;
+  }
+
   const layoutKeys = layout.keys;
 
-  const layoutMap = layoutKeys["row1"]
-    .concat(layoutKeys["row2"])
-    .concat(layoutKeys["row3"])
-    .concat(layoutKeys["row4"])
-    .concat(layoutKeys["row5"]);
+  const layoutMap = layoutKeys.row1
+    .concat(layoutKeys.row2)
+    .concat(layoutKeys.row3)
+    .concat(layoutKeys.row4)
+    .concat(layoutKeys.row5);
 
-  let mapIndex = null;
-  for (let i = 0; i < keyEventCodes.length; i++) {
-    if (event.code == keyEventCodes[i]) {
-      mapIndex = i;
-    }
-  }
-  if (!mapIndex) {
+  const mapIndex = keyEventCodes.indexOf(event.code);
+  if (mapIndex === -1) {
     if (event.code.includes("Numpad")) {
       return event.key;
     } else {
       return null;
     }
   }
-  const newKeyPreview = layoutMap[mapIndex][0];
-  const shift = emulatedLayoutShouldShiftKey(event, newKeyPreview) ? 1 : 0;
-  const char = layoutMap[mapIndex][shift];
-  if (char) {
-    return char;
+  const charVariant = emulatedLayoutGetVariant(
+    event,
+    layoutMap[mapIndex] ?? ""
+  );
+  if (charVariant !== undefined) {
+    return charVariant;
   } else {
-    return event.key;
+    return null;
   }
 }
+
+export function updateAltGrState(event: JQuery.KeyboardEventBase): void {
+  const shouldHandleLeftAlt =
+    event.code === "AltLeft" && navigator.userAgent.includes("Mac");
+  if (event.code !== "AltRight" && !shouldHandleLeftAlt) return;
+  if (event.type === "keydown") isAltGrPressed = true;
+  if (event.type === "keyup") isAltGrPressed = false;
+}
+
+export function getIsAltGrPressed(): boolean {
+  return isAltGrPressed;
+}
+
+$(document).on("keydown", updateAltGrState);
+$(document).on("keyup", updateAltGrState);

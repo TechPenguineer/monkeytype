@@ -13,7 +13,7 @@ type Particle = {
 
 type CTX = {
   particles: Particle[];
-  caret?: JQuery<HTMLElement>;
+  caret?: JQuery;
   canvas?: HTMLCanvasElement;
   context2d?: CanvasRenderingContext2D;
   rendering: boolean;
@@ -41,7 +41,7 @@ const particleSize = 4;
 const particleFade = 0.6;
 const particleInitVel = 1500;
 const particleBounceMod = 0.3;
-const particleCreateCount = [6, 3];
+const particleCreateCount: [number, number] = [6, 3];
 const shakeAmount = 10;
 
 function createCanvas(): HTMLCanvasElement {
@@ -90,8 +90,8 @@ function updateParticle(particle: Particle): void {
   particle.prev.x = particle.x;
   particle.prev.y = particle.y;
   // Update pos
-  particle.x += particle.vel.x * (ctx.deltaTime as number);
-  particle.y += particle.vel.y * (ctx.deltaTime as number);
+  particle.x += particle.vel.x * ctx.deltaTime;
+  particle.y += particle.vel.y * ctx.deltaTime;
 
   if (particle.x > ctx.canvas.width) {
     particle.vel.x *= -particleBounceMod;
@@ -132,8 +132,8 @@ function render(): void {
   ctx.context2d.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
   const keep = [];
-  for (let i = 0; i < ctx.particles.length; i++) {
-    const particle = ctx.particles[i];
+  // for (let i = 0; i < ctx.particles.length; i++) {
+  for (const particle of ctx.particles) {
     if (particle.alpha < 0.1) continue;
 
     updateParticle(particle);
@@ -199,6 +199,8 @@ function randomColor(): string {
  */
 export async function addPower(good = true, extra = false): Promise<void> {
   if (Config.monkeyPowerLevel === "off" || SlowTimer.get()) return;
+
+  if (Config.blindMode) good = true;
 
   // Shake
   if (["3", "4"].includes(Config.monkeyPowerLevel)) {

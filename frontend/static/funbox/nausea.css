@@ -1,4 +1,4 @@
-@keyframes woah {
+@keyframes nausea {
   0% {
     transform: rotateY(-15deg) skewY(10deg) rotateX(-15deg) scaleX(1.2)
       scaleY(0.9);
@@ -24,15 +24,26 @@
   }
 }
 
-#middle {
-  animation: woah 7s infinite cubic-bezier(0.5, 0, 0.5, 1);
+#typingTest {
+  animation: nausea 7s infinite cubic-bezier(0.5, 0, 0.5, 1);
 }
 
-#centerContent {
-  transform: rotate(5deg);
+header {
+  transform: rotate(2deg);
+  perspective: 500px;
+}
+
+footer {
+  transform: rotate(-2deg);
   perspective: 500px;
 }
 
 body {
   overflow: hidden;
+}
+
+#wordsInput {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }

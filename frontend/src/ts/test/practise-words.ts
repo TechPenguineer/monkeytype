@@ -4,34 +4,44 @@ import Config, * as UpdateConfig from "../config";
 import * as CustomText from "./custom-text";
 import * as TestInput from "./test-input";
 import * as ConfigEvent from "../observables/config-event";
+import { setCustomTextName } from "../states/custom-text-name";
+import { Mode } from "@monkeytype/contracts/schemas/shared";
 
-interface Before {
-  mode: MonkeyTypes.Mode | null;
+type Before = {
+  mode: Mode | null;
   punctuation: boolean | null;
   numbers: boolean | null;
-}
+  customText: CustomText.CustomTextData | null;
+};
 
 export const before: Before = {
   mode: null,
   punctuation: null,
   numbers: null,
+  customText: null,
 };
 
-export function init(missed: boolean, slow: boolean): void {
-  if (Config.mode === "zen") return;
+export function init(
+  missed: "off" | "words" | "biwords",
+  slow: boolean
+): boolean {
+  if (Config.mode === "zen") return false;
   let limit;
-  if ((missed && !slow) || (!missed && slow)) {
+  if ((missed === "words" && !slow) || (missed === "off" && slow)) {
     limit = 20;
-  } else if (missed && slow) {
-    limit = 10;
   } else {
+    // (biwords) or (missed-words and slow) or (biwords and slow)
     limit = 10;
   }
 
+  // missed word, previous word, count
   let sortableMissedWords: [string, number][] = [];
-  if (missed) {
+  if (missed === "words") {
     Object.keys(TestInput.missedWords).forEach((missedWord) => {
-      sortableMissedWords.push([missedWord, TestInput.missedWords[missedWord]]);
+      const missedWordCount = TestInput.missedWords[missedWord];
+      if (missedWordCount !== undefined) {
+        sortableMissedWords.push([missedWord, missedWordCount]);
+      }
     });
     sortableMissedWords.sort((a, b) => {
       return b[1] - a[1];
@@ -39,17 +49,43 @@ export function init(missed: boolean, slow: boolean): void {
     sortableMissedWords = sortableMissedWords.slice(0, limit);
   }
 
-  if (missed && !slow && sortableMissedWords.length == 0) {
+  let sortableMissedBiwords: [string, string, number][] = [];
+  if (missed === "biwords") {
+    for (let i = 0; i < TestWords.words.length; i++) {
+      const missedWord = TestWords.words.get(i);
+      const missedWordCount = TestInput.missedWords[missedWord];
+      if (missedWordCount !== undefined) {
+        if (i === 0) {
+          sortableMissedBiwords.push([missedWord, "", missedWordCount]);
+        } else {
+          sortableMissedBiwords.push([
+            missedWord,
+            TestWords.words.get(i - 1),
+            missedWordCount,
+          ]);
+        }
+      }
+    }
+    sortableMissedBiwords.sort((a, b) => {
+      return b[2] - a[2];
+    });
+    sortableMissedBiwords = sortableMissedBiwords.slice(0, limit);
+  }
+
+  if (
+    ((missed === "words" && sortableMissedWords.length === 0) ||
+      (missed === "biwords" && sortableMissedBiwords.length === 0)) &&
+    !slow
+  ) {
     Notifications.add("You haven't missed any words", 0);
-    return;
+    return false;
   }
 
   let sortableSlowWords: [string, number][] = [];
   if (slow) {
-    sortableSlowWords = (TestWords.words.get() as string[]).map((e, i) => [
-      e,
-      TestInput.burstHistory[i],
-    ]);
+    sortableSlowWords = TestWords.words
+      .get()
+      .map((e, i) => [e, TestInput.burstHistory[i] ?? 0]);
     sortableSlowWords.sort((a, b) => {
       return a[1] - b[1];
     });
@@ -57,14 +93,22 @@ export function init(missed: boolean, slow: boolean): void {
       0,
       Math.min(limit, Math.round(TestWords.words.length * 0.2))
     );
+    if (sortableSlowWords.length === 0) {
+      Notifications.add("Test too short to classify slow words.", 0);
+    }
   }
 
   // console.log(sortableMissedWords);
+  // console.log(sortableMissedBiwords);
   // console.log(sortableSlowWords);
 
-  if (sortableMissedWords.length == 0 && sortableSlowWords.length == 0) {
+  if (
+    sortableMissedWords.length === 0 &&
+    sortableMissedBiwords.length === 0 &&
+    sortableSlowWords.length === 0
+  ) {
     Notifications.add("Could not start a new custom test", 0);
-    return;
+    return false;
   }
 
   const newCustomText: string[] = [];
@@ -74,111 +118,60 @@ export function init(missed: boolean, slow: boolean): void {
     }
   });
 
+  sortableMissedBiwords.forEach((missedBiwords) => {
+    for (let i = 0; i < missedBiwords[2]; i++) {
+      if (missedBiwords[1] !== "") {
+        newCustomText.push(missedBiwords[1] + " " + missedBiwords[0]);
+      } else {
+        newCustomText.push(missedBiwords[0]);
+      }
+    }
+  });
+
   sortableSlowWords.forEach((slow, index) => {
     for (let i = 0; i < sortableSlowWords.length - index; i++) {
       newCustomText.push(slow[0]);
     }
   });
 
-  // console.log(newCustomText);
-
   const mode = before.mode === null ? Config.mode : before.mode;
   const punctuation =
     before.punctuation === null ? Config.punctuation : before.punctuation;
   const numbers = before.numbers === null ? Config.numbers : before.numbers;
-  UpdateConfig.setMode("custom");
 
+  let customText = null;
+  if (Config.mode === "custom") {
+    customText = CustomText.getData();
+  }
+
+  UpdateConfig.setMode("custom", true);
+  CustomText.setPipeDelimiter(true);
   CustomText.setText(newCustomText);
-  CustomText.setIsWordRandom(true);
-  CustomText.setIsTimeRandom(false);
-  CustomText.setWord(
-    (sortableSlowWords.length + sortableMissedWords.length) * 5
+  CustomText.setLimitMode("section");
+  CustomText.setMode("shuffle");
+  CustomText.setLimitValue(
+    (sortableSlowWords.length +
+      sortableMissedWords.length +
+      sortableMissedBiwords.length) *
+      5
   );
-  CustomText.setTime(-1);
+
+  setCustomTextName("practise", undefined);
 
   before.mode = mode;
   before.punctuation = punctuation;
   before.numbers = numbers;
+  before.customText = customText;
+
+  return true;
 }
 
 export function resetBefore(): void {
   before.mode = null;
   before.punctuation = null;
   before.numbers = null;
+  before.customText = null;
 }
-
-export function showPopup(focus = false): void {
-  if ($("#practiseWordsPopupWrapper").hasClass("hidden")) {
-    if (Config.mode === "zen") {
-      Notifications.add("Practice words is unsupported in zen mode", 0);
-      return;
-    }
-    $("#practiseWordsPopupWrapper")
-      .stop(true, true)
-      .css("opacity", 0)
-      .removeClass("hidden")
-      .animate({ opacity: 1 }, 100, () => {
-        if (focus) {
-          console.log("focusing");
-          $("#practiseWordsPopup .missed").trigger("focus");
-        }
-      });
-  }
-}
-
-export function hidePopup(): void {
-  if (!$("#practiseWordsPopupWrapper").hasClass("hidden")) {
-    $("#practiseWordsPopupWrapper")
-      .stop(true, true)
-      .css("opacity", 1)
-      .animate(
-        {
-          opacity: 0,
-        },
-        100,
-        () => {
-          $("#practiseWordsPopupWrapper").addClass("hidden");
-        }
-      );
-  }
-}
-
-$("#practiseWordsPopupWrapper").on("click", (e) => {
-  if ($(e.target).attr("id") === "practiseWordsPopupWrapper") {
-    hidePopup();
-  }
-});
-
-$("#practiseWordsPopup .button").on("keypress", (e) => {
-  if (e.key === "Enter") {
-    $(e.currentTarget).click();
-  }
-});
-
-$("#practiseWordsPopup .button.both").on("focusout", (e) => {
-  e.preventDefault();
-  $("#practiseWordsPopup .missed").trigger("focus");
-});
-
-$(document).on("keydown", (event) => {
-  if (
-    event.key === "Escape" &&
-    !$("#practiseWordsPopupWrapper").hasClass("hidden")
-  ) {
-    hidePopup();
-    event.preventDefault();
-  }
-});
-
-$(document).on("keypress", "#practiseWordsButton", (event) => {
-  if (event.key === "Enter") {
-    showPopup(true);
-  }
-});
-
-$(document.body).on("click", "#practiseWordsButton", () => {
-  showPopup();
-});
 
 ConfigEvent.subscribe((eventKey) => {
   if (eventKey === "mode") resetBefore();
