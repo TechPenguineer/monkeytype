@@ -1,4 +1,4 @@
-import * as Misc from "../utils/misc";
+import * as DateTime from "../utils/date-and-time";
 import * as DB from "../db";
 
 let seconds = 0;
@@ -17,8 +17,8 @@ export function addSeconds(s: number): void {
 }
 
 export function getString(): string {
-  const secString = Misc.secondsToString(Math.round(seconds), true, true);
-  return secString + (addedAllToday === true ? " today" : " session");
+  const secString = DateTime.secondsToString(Math.round(seconds), true, true);
+  return secString + (addedAllToday ? " today" : " session");
 }
 
 export function addAllFromToday(): void {
@@ -31,8 +31,9 @@ export function addAllFromToday(): void {
   const todayDateMS = todayDate.getTime();
 
   seconds = 0;
-
-  const results = DB.getSnapshot().results;
+  const snapshot = DB.getSnapshot();
+  if (!snapshot) return;
+  const results = snapshot.results;
 
   results?.forEach((result) => {
     const resultDate = new Date(result.timestamp);

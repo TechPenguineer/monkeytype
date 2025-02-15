@@ -1,24 +1,15 @@
 import * as Misc from "./utils/misc";
+import * as JSONData from "./utils/json-data";
 import * as Notifications from "./elements/notifications";
-
-type PossibleType =
-  | "string"
-  | "number"
-  | "numberArray"
-  | "boolean"
-  | "undefined"
-  | "null"
-  | "stringArray"
-  | string[]
-  | number[];
+import { ZodSchema, z } from "zod";
 
 type PossibleTypeAsync = "layoutfluid";
 
-export function isConfigKeyValid(name: string): boolean {
-  if (name === null || name === undefined || name === "") return false;
-  if (name.length > 30) return false;
-  return /^[0-9a-zA-Z_.\-#+]+$/.test(name);
-}
+// function isConfigKeyValid(name: string): boolean {
+//   if (name === null || name === undefined || name === "") return false;
+//   if (name.length > 30) return false;
+//   return /^[0-9a-zA-Z_.\-#+]+$/.test(name);
+// }
 
 function invalid(key: string, val: unknown, customMessage?: string): void {
   if (customMessage === undefined) {
@@ -36,66 +27,18 @@ function invalid(key: string, val: unknown, customMessage?: string): void {
   console.error(`Invalid value key ${key} value ${val} type ${typeof val}`);
 }
 
-function isArray(val: unknown): val is unknown[] {
-  return val instanceof Array;
-}
-
-export function isConfigValueValid(
+export function isConfigValueValid<T>(
   key: string,
-  val: unknown,
-  possibleTypes: PossibleType[]
+  val: T,
+  schema: ZodSchema<T>
 ): boolean {
-  let isValid = false;
-
-  // might be used in the future
-  // eslint-disable-next-line
-  let customMessage: string | undefined = undefined;
-
-  for (const possibleType of possibleTypes) {
-    switch (possibleType) {
-      case "boolean":
-        if (typeof val === "boolean") isValid = true;
-        break;
-
-      case "null":
-        if (val === null) isValid = true;
-        break;
-
-      case "number":
-        if (typeof val === "number") isValid = true;
-        break;
-
-      case "numberArray":
-        if (isArray(val) && val.every((v) => typeof v === "number")) {
-          isValid = true;
-        }
-        break;
-
-      case "string":
-        if (typeof val === "string") isValid = true;
-        break;
-
-      case "stringArray":
-        if (isArray(val) && val.every((v) => typeof v === "string")) {
-          isValid = true;
-        }
-        break;
-
-      case "undefined":
-        if (typeof val === "undefined" || val === undefined) isValid = true;
-        break;
-
-      default:
-        if (isArray(possibleType)) {
-          if (possibleType.includes(<never>val)) isValid = true;
-        }
-        break;
-    }
-  }
-
-  if (!isValid) invalid(key, val, customMessage);
+  const isValid = schema.safeParse(val).success;
+  if (!isValid) invalid(key, val, undefined);
 
   return isValid;
+}
+export function isConfigValueValidBoolean(key: string, val: boolean): boolean {
+  return isConfigValueValid(key, val, z.boolean());
 }
 
 export async function isConfigValueValidAsync(
@@ -116,9 +59,19 @@ export async function isConfigValueValidAsync(
 
         if (layoutNames.length < 2 || layoutNames.length > 5) break;
 
+        try {
+          await JSONData.getLayoutsList();
+        } catch (e) {
+          customMessage = Misc.createErrorMessage(
+            e,
+            "Failed to validate layoutfluid value"
+          );
+          break;
+        }
+
         // convert the layout names to layouts
         const layouts = await Promise.all(
-          layoutNames.map((layoutName) => Misc.getLayout(layoutName))
+          layoutNames.map(async (layoutName) => JSONData.getLayout(layoutName))
         );
 
         // check if all layouts exist

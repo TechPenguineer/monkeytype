@@ -1,9 +1,11 @@
-let activePage: MonkeyTypes.Page | undefined = "loading";
+import { PageName } from "../pages/page";
 
-export function get(): MonkeyTypes.Page | undefined {
+let activePage: PageName = "loading";
+
+export function get(): PageName {
   return activePage;
 }
 
-export function set(active: MonkeyTypes.Page | undefined): void {
+export function set(active: PageName): void {
   activePage = active;
 }
